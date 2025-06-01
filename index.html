@@ -5,100 +5,107 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>To-Do List</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-        }
-        #todoList {
+        table {
             border-collapse: collapse;
-            width: 70%;
-            margin: 0 auto;
+            width: 100%;
         }
-        #todoList th, #todoList td {
-            border: 1px solid #ddd;
+
+        th, td {
+            border: 1px solid black;
             padding: 8px;
             text-align: left;
         }
-        #todoList th {
-            background-color: #f0f0f0;
+
+        th {
+            background-color: #f2f2f2;
         }
-        #todoList th:first-child, #todoList th:last-child {
-            width: 5%;
+
+        .delete-btn, .edit-btn {
+            cursor: pointer;
         }
-        #todoList th:nth-child(2) {
-            width: 90%;
-        }
-        .add-form {
-            margin-top: 20px;
-            width: 70%;
-            margin: 20px auto;
-        }
-        .add-form input[type="text"] {
-            padding: 8px;
-            width: 70%;
-        }
-        .add-form button {
-            padding: 8px;
-            width: 20%;
+
+        .edit-form {
+            display: none;
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
-
-<h2 style="text-align: center;">To-Do List</h2>
-
-<table id="todoList">
-    <thead>
+    <h1>To-Do List</h1>
+    <table>
         <tr>
             <th>Number</th>
             <th>Text</th>
             <th>Action</th>
         </tr>
-    </thead>
-    <tbody id="listBody">
         {{rows}}
-    </tbody>
-</table>
+    </table>
 
-<div class="add-form">
-    <input type="text" id="newItem" placeholder="Enter new item">
-    <button onclick="addItem()">Add</button>
-</div>
+    <form id="add-form">
+        <input type="text" id="new-item" placeholder="New item" required>
+        <button type="submit">Add</button>
+    </form>
 
-<script>
-    let items = [];
-    let nextId = 1;
+    <div id="edit-form" class="edit-form">
+        <input type="text" id="edit-item" placeholder="Edit item" required>
+        <input type="hidden" id="edit-id">
+        <button onclick="submitEdit()">Save</button>
+        <button onclick="cancelEdit()">Cancel</button>
+    </div>
 
-    function renderList() {
-        const listBody = document.getElementById('listBody');
-        listBody.innerHTML = '';
-
-        items.forEach((item, index) => {
-            const row = document.createElement('tr');
-            row.innerHTML = `
-                <td>${index + 1}</td>
-                <td>${item.text}</td>
-                <td><button onclick="removeItem(${index})">Remove</button></td>
-            `;
-            listBody.appendChild(row);
-        });
-    }
-
-    function addItem() {
-        const newItemInput = document.getElementById('newItem');
-        const newItemText = newItemInput.value.trim();
-
-        if (newItemText) {
-            items.push({ id: nextId++, text: newItemText });
-            newItemInput.value = '';
-            renderList();
+    <script>
+        // Удаление элемента
+        function deleteItem(id) {
+            fetch('/', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id })
+            }).then(response => {
+                if (response.ok) window.location.reload();
+            });
         }
-    }
 
-    function removeItem(index) {
-        items.splice(index, 1);
-        renderList();
-    }
-</script>
+        // Открытие формы редактирования
+        function editItem(id, text) {
+            document.getElementById('edit-id').value = id;
+            document.getElementById('edit-item').value = text;
+            document.getElementById('edit-form').style.display = 'block';
+            document.getElementById('add-form').style.display = 'none';
+        }
 
+        // Отмена редактирования
+        function cancelEdit() {
+            document.getElementById('edit-form').style.display = 'none';
+            document.getElementById('add-form').style.display = 'block';
+            document.getElementById('edit-item').value = '';
+            document.getElementById('edit-id').value = '';
+        }
+
+        // Отправка данных для редактирования
+        function submitEdit() {
+            const id = document.getElementById('edit-id').value;
+            const text = document.getElementById('edit-item').value;
+            fetch('/', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, text })
+            }).then(response => {
+                if (response.ok) window.location.reload();
+            });
+        }
+
+        // Добавление нового элемента
+        document.getElementById('add-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            const text = document.getElementById('new-item').value;
+            fetch('/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            }).then(response => {
+                if (response.ok) window.location.reload();
+            });
+        });
+    </script>
 </body>
 </html>
