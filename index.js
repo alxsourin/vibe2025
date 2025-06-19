@@ -2,8 +2,14 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
+const bcrypt = require('bcrypt');
+const session = require('express-session');
+const TelegramBot = require('node-telegram-bot-api');
 
-const PORT = 3000;
+// Настройки Telegram-бота
+const TELEGRAM_TOKEN = '7613122686:AAHdpQowr1TJYLlGCoKxvniwzS-4nDexsNE'; // Замените на ваш токен
+const TELEGRAM_CHAT_ID = '905639492'; // Замените на ваш chat_id
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 
 // Настройки подключения к базе данных
 const dbConfig = {
@@ -12,6 +18,20 @@ const dbConfig = {
     password: '0000',
     database: 'todolist',
 };
+
+// Инициализация сессий
+const app = {
+    use: (middleware) => {
+        app.middleware = middleware;
+    },
+    middleware: (req, res, next) => next()
+};
+
+app.use(session({
+    secret: 'secret',
+    resave: false,
+    saveUninitialized: true
+}));
 
 // Получение всех элементов списка
 async function retrieveListItems() {
@@ -104,85 +124,257 @@ async function getHtmlRows() {
     }
 }
 
+// Аутентификация пользователя
+async function authenticateUser(username, password) {
+    try {
+        console.log('Authenticating user:', username);
+        const connection = await mysql.createConnection(dbConfig);
+        const query = 'SELECT * FROM users WHERE username = ?';
+        const [rows] = await connection.execute(query, [username]);
+        await connection.end();
+        if (rows.length === 0) {
+            console.log('User not found:', username);
+            return false;
+        }
+        const user = rows[0];
+        const match = await bcrypt.compare(password, user.password);
+        console.log('Password match:', match);
+        return match;
+    } catch (error) {
+        console.error('Error authenticating user:', error.message);
+        console.error(error.stack);
+        throw error;
+    }
+}
+
+// Отправка сообщения в Telegram
+async function sendTelegramMessage(username) {
+    try {
+        const message = `Пользователь ${username} вошел в To-Do List в ${new Date().toLocaleString('ru-RU')}`;
+        await bot.sendMessage(TELEGRAM_CHAT_ID, message);
+        console.log(`Telegram message sent for user: ${username}`);
+    } catch (error) {
+        console.error('Error sending Telegram message:', error.message);
+        console.error(error.stack);
+    }
+}
+
 // Обработчик запросов
 async function handleRequest(req, res) {
-    if (req.url === '/' && req.method === 'GET') {
-        try {
-            console.log('Handling GET request for /');
-            console.log('Attempting to read index.html...');
-            const html = await fs.promises.readFile(
-                path.join(__dirname, 'index.html'),
-                'utf8'
-            );
-            console.log('index.html read successfully');
-            const processedHtml = html.replace('{{rows}}', await getHtmlRows());
-            console.log('HTML processed successfully');
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(processedHtml);
-        } catch (err) {
-            console.error('Failed to load index.html:', err.message);
-            console.error(err.stack);
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end(`Error loading index.html: ${err.message}`);
+    app.middleware(req, res, async () => {
+        if (req.url === '/' && req.method === 'GET') {
+            if (req.session.user) {
+                try {
+                    console.log('Handling GET request for /');
+                    console.log('Attempting to read index.html...');
+                    const html = await fs.promises.readFile(
+                        path.join(__dirname, 'index.html'),
+                        'utf8'
+                    );
+                    console.log('index.html read successfully');
+                    const processedHtml = html.replace('{{rows}}', await getHtmlRows());
+                    console.log('HTML processed successfully');
+                    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(processedHtml);
+                } catch (err) {
+                    console.error('Failed to load index.html:', err.message);
+                    console.error(err.stack);
+                    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`
+                        <html>
+                            <head>
+                                <meta charset="UTF-8">
+                                <title>Ошибка</title>
+                            </head>
+                            <body>
+                                <h2>Ошибка</h2>
+                                <p>Ошибка загрузки страницы: ${err.message}</p>
+                                <a href="/login">Вернуться к входу</a>
+                            </body>
+                        </html>
+                    `);
+                }
+            } else {
+                res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8', 'Location': '/login' });
+                res.end();
+            }
+        } else if (req.url === '/login' && req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`
+                <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>Вход</title>
+                    </head>
+                    <body>
+                        <h2>Вход</h2>
+                        <form action="/login" method="post">
+                            <label for="username">Логин:</label>
+                            <input type="text" id="username" name="username"><br>
+                            <label for="password">Пароль:</label>
+                            <input type="password" id="password" name="password"><br>
+                            <input type="submit" value="Войти">
+                        </form>
+                    </body>
+                </html>
+            `);
+        } else if (req.url === '/login' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', async () => {
+                try {
+                    console.log('Handling POST request for /login with body:', body);
+                    const data = new URLSearchParams(body);
+                    const username = data.get('username');
+                    const password = data.get('password');
+                    const authenticated = await authenticateUser(username, password);
+                    if (authenticated) {
+                        req.session.user = username;
+                        await sendTelegramMessage(username); // Отправка сообщения в Telegram
+                        res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8', 'Location': '/' });
+                        res.end();
+                    } else {
+                        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+                        res.end(`
+                            <html>
+                                <head>
+                                    <meta charset="UTF-8">
+                                    <title>Ошибка входа</title>
+                                </head>
+                                <body>
+                                    <h2>Ошибка</h2>
+                                    <p>Неверный логин или пароль</p>
+                                    <a href="/login">Попробовать снова</a>
+                                </body>
+                            </html>
+                        `);
+                    }
+                } catch (err) {
+                    console.error('Error authenticating user:', err.message);
+                    console.error(err.stack);
+                    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`
+                        <html>
+                            <head>
+                                <meta charset="UTF-8">
+                                <title>Ошибка</title>
+                            </head>
+                            <body>
+                                <h2>Ошибка</h2>
+                                <p>Ошибка аутентификации: ${err.message}</p>
+                                <a href="/login">Попробовать снова</a>
+                            </body>
+                        </html>
+                    `);
+                }
+            });
+        } else if (req.url === '/' && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', async () => {
+                try {
+                    console.log('Handling POST request with body:', body);
+                    const data = JSON.parse(body);
+                    await addItem(data.text);
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ success: true }));
+                } catch (err) {
+                    console.error('Error adding item:', err.message);
+                    console.error(err.stack);
+                    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`
+                        <html>
+                            <head>
+                                <meta charset="UTF-8">
+                                <title>Ошибка</title>
+                            </head>
+                            <body>
+                                <h2>Ошибка</h2>
+                                <p>Ошибка добавления задачи: ${err.message}</p>
+                                <a href="/">Вернуться</a>
+                            </body>
+                        </html>
+                    `);
+                }
+            });
+        } else if (req.url === '/' && req.method === 'PUT') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', async () => {
+                try {
+                    console.log('Handling PUT request with body:', body);
+                    const data = JSON.parse(body);
+                    await updateItem(data.id, data.text);
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ success: true }));
+                } catch (err) {
+                    console.error('Error updating item:', err.message);
+                    console.error(err.stack);
+                    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`
+                        <html>
+                            <head>
+                                <meta charset="UTF-8">
+                                <title>Ошибка</title>
+                            </head>
+                            <body>
+                                <h2>Ошибка</h2>
+                                <p>Ошибка обновления задачи: ${err.message}</p>
+                                <a href="/">Вернуться</a>
+                            </body>
+                        </html>
+                    `);
+                }
+            });
+        } else if (req.url === '/' && req.method === 'DELETE') {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', async () => {
+                try {
+                    console.log('Handling DELETE request with body:', body);
+                    const data = JSON.parse(body);
+                    await deleteItem(data.id);
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ success: true }));
+                } catch (err) {
+                    console.error('Error deleting item:', err.message);
+                    console.error(err.stack);
+                    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+                    res.end(`
+                        <html>
+                            <head>
+                                <meta charset="UTF-8">
+                                <title>Ошибка</title>
+                            </head>
+                            <body>
+                                <h2>Ошибка</h2>
+                                <p>Ошибка удаления задачи: ${err.message}</p>
+                                <a href="/">Вернуться</a>
+                            </body>
+                        </html>
+                    `);
+                }
+            });
+        } else {
+            console.log(`Route not found: ${req.url} ${req.method}`);
+            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`
+                <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>404 - Не найдено</title>
+                    </head>
+                    <body>
+                        <h2>404 - Страница не найдена</h2>
+                        <p>Маршрут не найден</p>
+                        <a href="/login">Вернуться к входу</a>
+                    </body>
+                </html>
+            `);
         }
-    } else if (req.url === '/' && req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', async () => {
-            try {
-                console.log('Handling POST request with body:', body);
-                const data = JSON.parse(body);
-                await addItem(data.text);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true }));
-            } catch (err) {
-                console.error('Error adding item:', err.message);
-                console.error(err.stack);
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end(`Error adding item: ${err.message}`);
-            }
-        });
-    } else if (req.url === '/' && req.method === 'PUT') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', async () => {
-            try {
-                console.log('Handling PUT request with body:', body);
-                const data = JSON.parse(body);
-                await updateItem(data.id, data.text);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true }));
-            } catch (err) {
-                console.error('Error updating item:', err.message);
-                console.error(err.stack);
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end(`Error updating item: ${err.message}`);
-            }
-        });
-    } else if (req.url === '/' && req.method === 'DELETE') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', async () => {
-            try {
-                console.log('Handling DELETE request with body:', body);
-                const data = JSON.parse(body);
-                await deleteItem(data.id);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true }));
-            } catch (err) {
-                console.error('Error deleting item:', err.message);
-                console.error(err.stack);
-                res.writeHead(500, { 'Content-Type': 'text/plain' });
-                res.end(`Error deleting item: ${err.message}`);
-            }
-        });
-    } else {
-        console.log(`Route not found: ${req.url} ${req.method}`);
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('Route not found');
-    }
+    });
 }
 
 // Создание и запуск сервера
 const server = http.createServer(handleRequest);
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(3000, () => console.log(`Server running on port 3000`));
